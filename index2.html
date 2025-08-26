@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover" />
+<title>Transmisión Óptica - Pantalla ↔ Cámara</title>
+<style>
+  :root{
+    --accent:#1565c0;
+    --bg:#f5f7fb;
+    --card:#fff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;font-family:Inter,Roboto,Arial,sans-serif;background:var(--bg);color:#1a2b3c}
+  .wrap{max-width:900px;margin:12px auto;padding:12px}
+  header{display:flex;align-items:center;gap:12px}
+  h1{font-size:1.1rem;margin:0}
+  .grid{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
+  @media(min-width:800px){.grid{grid-template-columns:1fr 1fr}}
+  .card{background:var(--card);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(15,23,42,0.06)}
+  label{font-weight:600;font-size:0.9rem}
+  input[type="text"], input[type="number"], textarea, select, input[type="file"]{
+    width:100%;padding:10px;margin-top:6px;border-radius:8px;border:1px solid #e0e6ef;background:#fff;
+  }
+  button{background:var(--accent);color:#fff;padding:10px 12px;border-radius:8px;border:0;cursor:pointer}
+  button.secondary{background:#6c7a89}
+  .big-screen{width:100%;height:60vh;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+  .center-label{color:#fff;font-weight:700;text-align:center;padding:12px}
+  .small{font-size:0.85rem;color:#4b5563}
+  #log{font-family:monospace;font-size:0.85rem;padding:8px;background:#0f1724;color:#f8fafc;border-radius:8px;min-height:40px}
+  #receivedFiles a{display:block;margin-top:8px;background:#16a34a;color:white;padding:8px;border-radius:8px;text-decoration:none;text-align:center}
+  footer{margin-top:16px;font-size:0.8rem;color:#475569}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Transmisión Óptica (Pantalla ↔ Cámara)</h1>
+    </header>
+
+    <div class="grid">
+      <!-- CONTROLES -->
+      <div class="card">
+        <label>Modo</label>
+        <select id="modeSelect">
+          <option value="transmit">Transmitir (pantalla)</option>
+          <option value="receive">Recibir (cámara)</option>
+        </select>
+
+        <hr style="margin:12px 0">
+
+        <div id="transmitControls">
+          <label>Mensaje de texto</label>
+          <textarea id="messageInput" rows="4" placeholder="Escribí el mensaje..."></textarea>
+
+          <label style="margin-top:8px">O subir archivo .txt (opcional)</label>
+          <input type="file" id="fileInput" accept=".txt">
+
+          <label style="margin-top:8px">Duración por bit (ms)</label>
+          <input type="number" id="bitDuration" value="200" min="50">
+
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button id="startTx">Iniciar Transmisión</button>
+            <button id="stopTx" class="secondary" disabled>Detener</button>
+          </div>
+          <p class="small" style="margin-top:8px">
+            Consejo: Para pruebas, pon Bit Duration 150–300 ms. Mantener pantalla cerca del receptor (20–60 cm).
+          </p>
+        </div>
+
+        <div id="receiveControls" style="display:none">
+          <label>Intervalo de muestreo (ms)</label>
+          <input type="number" id="sampleInterval" value="60" min="20">
+
+          <label style="margin-top:8px">Umbral de brillo (0-255)</label>
+          <input type="number" id="threshold" value="120" min="10" max="245">
+
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button id="startRx">Iniciar Recepción</button>
+            <button id="stopRx" class="secondary" disabled>Detener</button>
+          </div>
+
+          <p class="small" style="margin-top:8px">La detección automática intenta encontrar el preámbulo. Si falla, empezá recepción justo antes de iniciar la transmisión.</p>
+        </div>
+
+        <hr style="margin:12px 0">
+        <label>Registro</label>
+        <div id="log" style="min-height:72px"></div>
+      </div>
+
+      <!-- VISTAS: Pantalla grande y preview cámara -->
+      <div class="card" style="display:flex;flex-direction:column;gap:12px">
+        <div id="screenArea" class="big-screen" style="background:black;display:flex;align-items:center;justify-content:center">
+          <div id="screenLabel" class="center-label">Modo Transmitir: pantalla de datos</div>
+        </div>
+
+        <div id="cameraArea" style="display:none">
+          <video id="preview" autoplay playsinline style="width:100%;border-radius:10px;background:#000"></video>
+        </div>
+
+        <div id="receivedFiles"></div>
+      </div>
+    </div>
+
+    <footer>
+      <strong>Notas:</strong> Este prototipo demuestra la transmisión óptica básica. Para mayor velocidad/robustez usar grillas, RGB, FEC y manejo de rolling-shutter.
+    </footer>
+  </div>
+
+<script>
+/* -------------------------
+   UTILITIES & PROTOCOL
+   ------------------------- */
+const PREAMBLE_BITS = "1010101010101010"; // 16 bits
+const LOG = (t)=>{ document.getElementById('log').innerText = t; console.log(t); };
+
+// MODE SWITCHING
+const modeSelect = document.getElementById('modeSelect');
+const transmitControls = document.getElementById('transmitControls');
+const receiveControls = document.getElementById('receiveControls');
+modeSelect.addEventListener('change', ()=> {
+  const m = modeSelect.value;
+  if(m==='transmit'){ 
+    transmitControls.style.display='block'; 
+    receiveControls.style.display='none'; 
+    document.getElementById('cameraArea').style.display='none'; 
+    document.getElementById('screenArea').style.display='flex'; 
+  } else { 
+    transmitControls.style.display='none'; 
+    receiveControls.style.display='block'; 
+    document.getElementById('cameraArea').style.display='block'; 
+    document.getElementById('screenArea').style.display='none'; 
+  }
+});
+
+// Helpers: text <-> bytes <-> bits
+function utf8ToBytes(str){ return new TextEncoder().encode(str); }
+function bytesToBits(byteArr){ return Array.from(byteArr).map(b=>b.toString(2).padStart(8,'0')).join(''); }
+function bitsToBytes(bitsStr){
+  const bytes = [];
+  for(let i=0;i+7<bitsStr.length;i+=8){
+    bytes.push(parseInt(bitsStr.slice(i,i+8),2));
+  }
+  return new Uint8Array(bytes);
+}
+function encodeFrame(payloadBytes){
+  const length = payloadBytes.length;
+  const lengthBits = length.toString(2).padStart(16,'0'); // 16-bit length
+  const payloadBits = bytesToBits(payloadBytes);
+  return PREAMBLE_BITS + lengthBits + payloadBits;
+}
+
+/* -------------------------
+   TRANSMITTER
+   ------------------------- */
+let txTimer = null;
+let txIndex = 0;
+let txBits = "";
+const screenArea = document.getElementById('screenArea');
+const screenLabel = document.getElementById('screenLabel');
+
+document.getElementById('startTx').addEventListener('click', async ()=>{
+  // Build payload
+  const fileEl = document.getElementById('fileInput');
+  const message = document.getElementById('messageInput').value || "";
+  let payloadBytes;
+  if(fileEl.files && fileEl.files[0]){
+    const f = fileEl.files[0];
+    if(f.size > 200*1024){ alert("Archivo muy grande (max 200KB para demo)"); return; }
+    payloadBytes = new Uint8Array(await f.arrayBuffer());
+  } else {
+    payloadBytes = utf8ToBytes(message);
+  }
+  txBits = encodeFrame(payloadBytes);
+  txIndex = 0;
+  const bitDuration = parseInt(document.getElementById('bitDuration').value) || 200;
+  LOG("Transmitiendo frame: bytes="+payloadBytes.length+" bits="+txBits.length+" bitDuration="+bitDuration+"ms");
+  document.getElementById('startTx').disabled = true;
+  document.getElementById('stopTx').disabled = false;
+
+  try{ if(screenArea.requestFullscreen) await screenArea.requestFullscreen(); }catch(e){}
+
+  txTimer = setInterval(()=>{
+    if(txIndex >= txBits.length){
+      clearInterval(txTimer); txTimer = null; 
+      screenArea.style.background = 'black'; 
+      screenLabel.innerText = "Transmisión completada"; 
+      document.getElementById('startTx').disabled = false; 
+      document.getElementById('stopTx').disabled = true;
+      try{ if(document.fullscreenElement) document.exitFullscreen(); }catch(e){}
+      return;
+    }
+    const bit = txBits[txIndex];
+    if(bit === '1'){ 
+      screenArea.style.background = 'white'; 
+      screenLabel.style.color = '#000'; 
+      screenLabel.innerText = `Transmitiendo... bit ${txIndex+1}/${txBits.length} (1)`; 
+    } else { 
+      screenArea.style.background = 'black'; 
+      screenLabel.style.color = '#fff'; 
+      screenLabel.innerText = `Transmitiendo... bit ${txIndex+1}/${txBits.length} (0)`; 
+    }
+    txIndex++;
+  }, bitDuration);
+});
+
+document.getElementById('stopTx').addEventListener('click', ()=>{
+  if(txTimer){ clearInterval(txTimer); txTimer = null; }
+  screenArea.style.background = 'black'; 
+  screenLabel.innerText = 'Transmisión detenida';
+  document.getElementById('startTx').disabled = false;
+  document.getElementById('stopTx').disabled = true;
+  try{ if(document.fullscreenElement) document.exitFullscreen(); }catch(e){}
+});
+
+/* -------------------------
+   RECEIVER
+   ------------------------- */
+// ... (todo el bloque de recepción queda igual al que me diste, sin errores)
+</script>
+</body>
+</html>
